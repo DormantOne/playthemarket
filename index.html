@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8">
+    <title>Capital Game</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+        }
+        #game {
+            margin-top: 50px;
+        }
+        .ticker {
+            display: inline-block;
+            margin: 10px;
+            padding: 20px;
+            border: 1px solid #ccc;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .selected {
+            background-color: #4CAF50;
+            color: white;
+        }
+        #clock {
+            margin-top: 20px;
+            font-size: 24px;
+        }
+        #reset {
+            margin-top: 20px;
+            background-color: #f44336;
+            color: white;
+            padding: 10px;
+            border: none;
+            cursor: pointer;
+        }
+        #submit, #showResults {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #4CAF50;
+            color: white;
+            cursor: pointer;
+            display: none;
+        }
+        #result, #details {
+            margin-top: 20px;
+        }
+        /* Slot machine styling */
+        #slotMachine {
+            margin-top: 30px;
+            display: flex;
+            justify-content: center;
+        }
+        .slot {
+            font-size: 40px;
+            width: 80px;
+            height: 80px;
+            margin: 0 10px;
+            border: 2px solid #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #f1f1f1;
+            border-radius: 10px;
+        }
+        #finalMessage {
+            margin-top: 20px;
+            font-size: 30px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Capital Game</h1>
+<div id="game">
+    <h3>Select two tickers to swap their positions:</h3>
+    <div id="tickers">
+        <!-- Tickers will be dynamically inserted here -->
+    </div>
+    
+    <div id="clock">Time left: 5:00</div>
+    
+    <button id="reset">Reset Game</button>
+    <button id="submit">Submit Order</button>
+    <button id="showResults">More Info</button>
+    <div id="result"></div>
+    <div id="details" style="display:none;"></div>
+
+    <!-- Slot Machine Section -->
+    <div id="slotMachine">
+        <div class="slot" id="slot1">?</div>
+        <div class="slot" id="slot2">?</div>
+        <div class="slot" id="slot3">?</div>
+    </div>
+
+    <!-- Final Message -->
+    <div id="finalMessage"></div>
+</div>
+
+<script>
+const apiKey = 'BJL3ZlHRc3IpPvtz3kCDPQjPszxJktrz';
+let tickers = [];
+let initialPrices = {};
+let finalPrices = {};
+let selectedOrder = [];
+let firstSelected = null;  // Keep track of the first selected ticker
+let spinning = false;  // Control slot machine spinning state
+let correctCount = 0;  // Track correct answer count
+
+// Slot machine symbols
+const slotSymbols = ['ðŸŽ', 'ðŸ’', 'ðŸ‡', 'ðŸ‹', 'ðŸ‰', 'ðŸŒ', 'â­', 'ðŸŽ°', 'ðŸ’Ž', 'ðŸ””'];
+
+// Random stock symbols
+const allStockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'AMZN', 'NFLX', 'NVDA', 'BABA', 'SPY', 'INTC'];
+
+// Dynamically choose random stock symbols
+tickers = allStockSymbols.sort(() => 0.5 - Math.random()).slice(0, 3);
+
+// Dynamically display ticker tiles
+const tickerContainer = document.getElementById('tickers');
+
+// Retry mechanism with delay for rate-limiting (HTTP 429)
+async function fetchWithRetry(url, retries = 3, delay = 2000) {
+    for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+            const response = await fetch(url);
+            if (response.ok) {
+                return response.json();
+            } else if (response.status === 429) {
+                console.warn("Rate limit exceeded. Retrying...");
+                await new Promise(resolve => setTimeout(resolve, delay));  // Wait before retrying
+            } else {
+                throw new Error(`Failed to fetch data: ${response.statusText}`);
+            }
+        } catch (error) {
+            if (attempt === retries - 1) {
+                throw error;  // If out of retries, throw the error
+            }
+        }
+    }
+    return null;
+}
+
+// Fetch initial stock prices and insert into the DOM
+async function fetchInitialPrices() {
+    for (let symbol of tickers) {
+        try {
+            const price = await fetchStockData(symbol, 'prev');  // Yesterday's closing price
+            if (price) {
+                initialPrices[symbol] = price;
+                const tickerDiv = document.createElement('div');
+                tickerDiv.className = 'ticker';
+                tickerDiv.dataset.symbol = symbol;
+                tickerDiv.textContent = `${symbol} - $${price.toFixed(2)}`;
+                tickerDiv.addEventListener('click', () => handleTickerClick(tickerDiv));
+                tickerContainer.appendChild(tickerDiv);
+            } else {
+                console.error(`Failed to get price for symbol: ${symbol}`);
+            }
+        } catch (error) {
+            console.error(`Error fetching initial price for ${symbol}:`, error);
+        }
+    }
+    console.log('Initial prices:', JSON.stringify(initialPrices, null, 2));  // Log expanded JSON object
+}
+
+// Handle click to select two tickers and swap them
+function handleTickerClick(tickerDiv) {
+    if (!firstSelected) {
+        firstSelected = tickerDiv;
+        tickerDiv.classList.add('selected');
+    } else {
+        // Swap positions with the second ticker
+        swapTickers(firstSelected, tickerDiv);
+        firstSelected.classList.remove('selected');
+        firstSelected = null;
+        startSlotMachineSpin();  // Start the slot machine spinning when swap occurs
+        document.getElementById('submit').style.display = 'inline-block';  // Show the submit button
+    }
+}
+
+// Swap the positions of two tickers
+function swapTickers(firstTicker, secondTicker) {
+    const firstIndex = Array.from(tickerContainer.children).indexOf(firstTicker);
+    const secondIndex = Array.from(tickerContainer.children).indexOf(secondTicker);
+    
+    if (firstIndex !== secondIndex) {
+        const temp = tickerContainer.children[firstIndex].textContent;
+        tickerContainer.children[firstIndex].textContent = tickerContainer.children[secondIndex].textContent;
+        tickerContainer.children[secondIndex].textContent = temp;
+    }
+}
+
+// Fetch stock data from Polygon.io (based on the type: 'prev' or 'today')
+async function fetchStockData(symbol, type) {
+    let endpoint = '';
+    if (type === 'prev') {
+        endpoint = `https://api.polygon.io/v2/aggs/ticker/${symbol}/prev?apiKey=${apiKey}`;
+    } else {
+        endpoint = `https://api.polygon.io/v2/aggs/ticker/${symbol}/prev?apiKey=${apiKey}`;  // Use `prev` as a placeholder for test
+    }
+    const data = await fetchWithRetry(endpoint);  // Use retry mechanism
+    if (data && data.results && data.results.length > 0) {
+        return data.results[0].c;  // Return the closing price
+    }
+    return null;
+}
+
+// Simulate final prices with a random small change
+function simulateFinalPrices() {
+    for (let symbol of tickers) {
+        const randomChange = (Math.random() - 0.5) * 2;  // Random % change between -1% and +1%
+        finalPrices[symbol] = initialPrices[symbol] * (1 + randomChange / 100);  // Simulated final price
+    }
+    console.log('Final prices (simulated):', finalPrices);
+}
+
+// Start the slot machine spinning (icons randomly change)
+function startSlotMachineSpin() {
+    spinning = true;
+    spinInterval = setInterval(() => {
+        if (spinning) {
+            document.getElementById('slot1').textContent = slotSymbols[Math.floor(Math.random() * slotSymbols.length)];
+            document.getElementById('slot2').textContent = slotSymbols[Math.floor(Math.random() * slotSymbols.length)];
+            document.getElementById('slot3').textContent = slotSymbols[Math.floor(Math.random() * slotSymbols.length)];
+        }
+    }, 100);  // Change symbols every 100ms to simulate spinning
+}
+
+// Stop the slot machine with a delay for each slot
+function stopSlotMachine() {
+    spinning = false;
+    clearInterval(spinInterval);
+
+    // Stop the first slot and leave the symbol as is
+    const firstSymbol = document.getElementById('slot1').textContent;
+    
+    // Stop the slot one by one, with the result based on win/lose logic
+    const finalIcon = resolveSlotResult(firstSymbol);
+    setTimeout(() => {
+        document.getElementById('slot1').textContent = firstSymbol;  // Stop the first symbol where it left off
+    }, 500);
+    setTimeout(() => {
+        document.getElementById('slot2').textContent = finalIcon[1];  // Stop the second symbol
+    }, 1000);
+    setTimeout(() => {
+        document.getElementById('slot3').textContent = finalIcon[2];  // Stop the third symbol
+        showFinalMessage();  // Show WIN/TRY AGAIN message
+    }, 1500);
+}
+
+// Resolve slot result based on first symbol
+function resolveSlotResult(firstSymbol) {
+    if (correctCount === 3) return [firstSymbol, firstSymbol, firstSymbol];  // All the same for a win
+    if (correctCount === 2) return [firstSymbol, firstSymbol, slotSymbols[Math.floor(Math.random() * slotSymbols.length)]];  // Two correct, one random
+    return [firstSymbol, slotSymbols[Math.floor(Math.random() * slotSymbols.length)], slotSymbols[Math.floor(Math.random() * slotSymbols.length)]];  // No matches
+}
+
+// Show final message below the slot machine
+function showFinalMessage() {
+    const messageDiv = document.getElementById('finalMessage');
+    if (correctCount === 3) {
+        messageDiv.textContent = 'WIN!!';
+    } else if (correctCount === 2) {
+        messageDiv.textContent = 'Almost!!';
+    } else {
+        messageDiv.textContent = 'Try Again!!';
+    }
+
+    document.getElementById('showResults').style.display = 'inline-block';  // Show the "More Info" button
+}
+
+// Fetch final prices after 5 minutes (simulated by generating small random changes)
+function fetchFinalPrices() {
+    simulateFinalPrices();  // Use simulated prices instead of fetching today's data
+    calculateChanges();
+}
+
+// Calculate percentage changes and show result
+function calculateChanges() {
+    const percentageChanges = tickers.map(symbol => {
+        const initialPrice = initialPrices[symbol] || 0;
+        const finalPrice = finalPrices[symbol] || 0;
+        const change = ((finalPrice - initialPrice) / initialPrice) * 100 || 0;
+        return { symbol, yesterday: initialPrice, today: finalPrice, change };
+    });
+
+    // Sort by percentage change
+    percentageChanges.sort((a, b) => a.change - b.change);
+
+    // Check if user order matches
+    correctCount = checkUserOrder(percentageChanges);
+    stopSlotMachine();  // Stop the slot machine on submit
+}
+
+// Compare userâ€™s selected order with the actual percentage change order
+function checkUserOrder(percentageChanges) {
+    const userOrder = Array.from(tickerContainer.children).map(ticker => {
+        // Extract symbol from displayed content (split by the dash in the display)
+        return ticker.textContent.split(' - ')[0];
+    });
+    const correctOrder = percentageChanges.map(item => item.symbol);
+
+    let correctCount = 0;
+    for (let i = 0; i < userOrder.length; i++) {
+        if (userOrder[i] === correctOrder[i]) {
+            correctCount++;
+        }
+    }
+
+    return correctCount;  // Return the number of correct answers
+}
+
+// Show detailed stats when the "More Info" button is clicked
+document.getElementById('showResults').addEventListener('click', () => {
+    const detailsDiv = document.getElementById('details');
+    detailsDiv.innerHTML = '<h3>Stock Performance:</h3>';
+    const percentageChanges = tickers.map(symbol => {
+        const initialPrice = initialPrices[symbol] || 0;
+        const finalPrice = finalPrices[symbol] || 0;
+        const change = ((finalPrice - initialPrice) / initialPrice) * 100 || 0;
+        return { symbol, yesterday: initialPrice, today: finalPrice, change };
+    });
+    percentageChanges.forEach(item => {
+        detailsDiv.innerHTML += `
+            <p>${item.symbol}: Yesterday's Close = $${item.yesterday.toFixed(2)}, 
+            Today's Close = $${item.today.toFixed(2)}, 
+            % Change = ${item.change.toFixed(2)}%</p>`;
+    });
+    detailsDiv.style.display = 'block';
+    document.getElementById('showResults').style.display = 'none';  // Hide the "More Info" button after showing stats
+});
+
+// Start the game with yesterday's prices
+fetchInitialPrices();
+
+// Timer function
+function startTimer(duration, display) {
+    let timer = duration, minutes, seconds;
+    const interval = setInterval(() => {
+        minutes = parseInt(timer / 60, 10);
+        seconds = parseInt(timer % 60, 10);
+        seconds = seconds < 10 ? "0" + seconds : seconds;
+        display.textContent = `Time left: ${minutes}:${seconds}`;
+
+        if (--timer < 0) {
+            clearInterval(interval);
+            fetchFinalPrices();  // Fetch final prices when timer ends
+        }
+    }, 1000);
+}
+
+// Set the timer to 5 minutes
+const fiveMinutes = 60 * 5;
+const clockDisplay = document.getElementById('clock');
+startTimer(fiveMinutes, clockDisplay);
+
+// Reset the game
+document.getElementById('reset').addEventListener('click', () => {
+    location.reload();  // Reload the page to start fresh
+});
+
+// Submit the order (in case they want to finish early)
+document.getElementById('submit').addEventListener('click', () => {
+    fetchFinalPrices();  // Fetch final prices and stop slot machine
+});
+
+</script>
+
+</body>
+</html>
